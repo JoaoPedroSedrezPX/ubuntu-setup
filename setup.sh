@@ -46,7 +46,8 @@ setup_system() {
   sudo apt install -y \
     git curl wget unzip fontconfig python3 \
     xclip direnv zoxide fzf ripgrep fd-find btop tldr \
-    lsof
+    lsof neofetch
+  neofetch
   ok "System packages installed"
 }
 
@@ -74,6 +75,9 @@ setup_ssh() {
   echo ""
   cat ~/.ssh/id_ed25519.pub
   echo ""
+  info "Testing GitHub connection (may fail if key not yet added)..."
+  ssh -T git@github.com 2>&1 || true
+  ssh -T git@bitbucket.org 2>&1 || true
 }
 
 # ─── 4. Zsh + Oh My Zsh + Zinit ───────────────────────────────────────────────
@@ -127,6 +131,10 @@ setup_starship() {
   curl -fsSL https://raw.githubusercontent.com/catppuccin/starship/refs/heads/main/starship.toml \
     -o ~/.config/starship.toml
   ok "Catppuccin starship.toml downloaded"
+
+  curl -L https://raw.githubusercontent.com/catppuccin/gnome-terminal/v1.0.0/install.py \
+    | python3 - 2>/dev/null || true
+  ok "Catppuccin GNOME Terminal theme applied"
 
   zshrc_append 'starship init zsh' 'eval "$(starship init zsh)"'
 }
@@ -229,7 +237,31 @@ setup_php() {
   fi
 }
 
-# ─── 9. GitHub CLI ─────────────────────────────────────────────────────────────
+# ─── 9. Google Chrome ──────────────────────────────────────────────────────────
+setup_chrome() {
+  step "Google Chrome"
+  if command -v google-chrome &>/dev/null; then
+    skip "Google Chrome already installed"
+    return
+  fi
+  wget -q -O /tmp/google-chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+  sudo dpkg -i /tmp/google-chrome.deb 2>/dev/null || sudo apt -f install -y
+  rm /tmp/google-chrome.deb
+  ok "Google Chrome installed"
+}
+
+# ─── 10. Zed Editor ────────────────────────────────────────────────────────────
+setup_zed() {
+  step "Zed editor"
+  if command -v zed &>/dev/null; then
+    skip "Zed already installed"
+    return
+  fi
+  curl -f https://zed.dev/install.sh | sh
+  ok "Zed installed"
+}
+
+# ─── (old 9) GitHub CLI ────────────────────────────────────────────────────────
 setup_github_cli() {
   step "GitHub CLI (official)"
 
@@ -381,6 +413,7 @@ setup_flatpaks() {
     [org.flameshot.Flameshot]="Flameshot"
     [com.rtosta.zapzap]="ZapZap"
     [com.stremio.Stremio]="Stremio"
+    [org.onlyoffice.desktopeditors]="OnlyOffice"
   )
 
   local installed
@@ -416,6 +449,16 @@ setup_gnome_extensions() {
   if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
     warn "No display detected — skipping GNOME extensions (run again from a desktop session)"
     return
+  fi
+
+  # touchegg — required for x11gestures extension
+  if ! command -v touchegg &>/dev/null; then
+    sudo add-apt-repository -y ppa:touchegg/stable
+    sudo apt update
+    sudo apt install -y touchegg
+    ok "touchegg installed (required for x11gestures)"
+  else
+    skip "touchegg already installed"
   fi
 
   pip3 install gnome-extensions-cli --break-system-packages --quiet 2>/dev/null || true
@@ -695,6 +738,8 @@ main() {
   setup_fonts
   setup_nvm_node
   setup_php
+  setup_chrome
+  setup_zed
   setup_github_cli
   setup_docker
   setup_kitty
