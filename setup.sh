@@ -45,9 +45,9 @@ setup_system() {
   sudo apt update && sudo apt upgrade -y
   sudo apt install -y \
     git curl wget unzip fontconfig python3 \
-    xclip direnv zoxide fzf ripgrep fd-find btop tldr \
-    lsof neofetch
-  neofetch
+    xclip direnv zoxide fzf ripgrep fd-find btop tealdeer \
+    lsof fastfetch
+  fastfetch
   ok "System packages installed"
 }
 
@@ -207,7 +207,22 @@ export NVM_DIR="$HOME/.nvm"
 setup_php() {
   step "PHP 8.1 + 8.2 + Composer"
 
-  sudo add-apt-repository -y ppa:ondrej/php
+  # remove leftover ppa:ondrej/php from older runs (discontinued on newer Ubuntu releases)
+  if ls /etc/apt/sources.list.d/*ondrej*php* &>/dev/null; then
+    sudo rm -f /etc/apt/sources.list.d/*ondrej*php*
+    warn "Removed leftover ppa:ondrej/php source"
+  fi
+
+  if [[ ! -f /etc/apt/sources.list.d/php.list ]]; then
+    sudo apt install -y apt-transport-https lsb-release ca-certificates curl
+    sudo mkdir -p /etc/apt/keyrings
+    sudo curl -sSLo /etc/apt/keyrings/deb.sury.org-php.gpg https://packages.sury.org/php/apt.gpg
+    echo "deb [signed-by=/etc/apt/keyrings/deb.sury.org-php.gpg] https://packages.sury.org/php/ $(lsb_release -sc) main" \
+      | sudo tee /etc/apt/sources.list.d/php.list > /dev/null
+    ok "Sury PHP repository added"
+  else
+    skip "Sury PHP repository already added"
+  fi
   sudo apt update
 
   local COMMON_EXTS="cli common mbstring opcache readline xml curl zip gd bcmath intl"
@@ -291,6 +306,20 @@ setup_docker() {
   fi
 
   sudo apt install -y gnome-terminal
+
+  if [[ ! -f /etc/apt/sources.list.d/docker.list ]]; then
+    sudo apt install -y ca-certificates curl
+    sudo install -m 0755 -d /etc/apt/keyrings
+    sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+    sudo chmod a+r /etc/apt/keyrings/docker.asc
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+      | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+    sudo apt update
+    ok "Docker CE repository added (provides docker-ce-cli for Docker Desktop)"
+  else
+    skip "Docker CE repository already added"
+  fi
+
   wget -q --show-progress \
     https://desktop.docker.com/linux/main/amd64/docker-desktop-amd64.deb \
     -O /tmp/docker-desktop.deb
@@ -316,6 +345,15 @@ setup_kitty() {
   ok "kitty.conf restored from repo"
 
   zshrc_append 'kitty.app/bin' 'export PATH="$HOME/.local/kitty.app/bin:$PATH"'
+
+  # Register desktop launcher (kitty.app ships its .desktop files inside
+  # ~/.local/kitty.app/share/applications, which desktop launchers don't scan)
+  mkdir -p ~/.local/share/applications ~/.local/share/icons/hicolor/256x256/apps
+  cp ~/.local/kitty.app/share/applications/kitty.desktop ~/.local/kitty.app/share/applications/kitty-open.desktop ~/.local/share/applications/
+  cp ~/.local/kitty.app/share/icons/hicolor/256x256/apps/kitty.png ~/.local/share/icons/hicolor/256x256/apps/
+  sed -i "s|Icon=kitty|Icon=$HOME/.local/kitty.app/share/icons/hicolor/256x256/apps/kitty.png|g; s|Exec=kitty|Exec=$HOME/.local/kitty.app/bin/kitty|g" ~/.local/share/applications/kitty*.desktop
+  update-desktop-database ~/.local/share/applications 2>/dev/null || true
+  ok "kitty desktop launcher registered"
 }
 
 # ─── 12. Neovim ────────────────────────────────────────────────────────────────
@@ -349,10 +387,11 @@ setup_jetbrains_toolbox() {
 
     wget -q --show-progress -O /tmp/jetbrains-toolbox.tar.gz "$url"
     local extracted
-    extracted=$(tar -tzf /tmp/jetbrains-toolbox.tar.gz | head -1 | cut -f1 -d"/")
+    extracted=$(basename "$url" .tar.gz)
     tar -xzf /tmp/jetbrains-toolbox.tar.gz -C /tmp/
     mkdir -p "$(dirname "$toolbox_bin")"
-    mv "/tmp/${extracted}/jetbrains-toolbox" "$toolbox_bin"
+    # the archive now nests the binary (and its .so libs) under bin/, so copy the whole dir
+    cp -r "/tmp/${extracted}/bin/." "$(dirname "$toolbox_bin")/"
     chmod +x "$toolbox_bin"
     rm -rf "/tmp/${extracted}" /tmp/jetbrains-toolbox.tar.gz
     ok "JetBrains Toolbox installed at $toolbox_bin"
@@ -427,6 +466,13 @@ setup_flatpaks() {
       ok "flatpak: ${FLATPAKS[$app_id]} installed"
     fi
   done
+
+  # flatpak exports its .desktop files under /var/lib/flatpak/exports/share, which
+  # is only added to XDG_DATA_DIRS by a fresh login shell — export it here so
+  # xdg-settings can find Zen Browser's desktop entry in this same script run
+  export XDG_DATA_DIRS="/var/lib/flatpak/exports/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+  xdg-settings set default-web-browser app.zen_browser.zen.desktop
+  ok "Zen Browser set as default web browser"
 }
 
 # ─── 16. Teleport Connect ──────────────────────────────────────────────────────
@@ -438,7 +484,10 @@ setup_teleport() {
     return
   fi
 
-  curl https://goteleport.com/static/install-connect.sh | bash -s 17
+  local teleport_version
+  teleport_version=$(curl -s https://api.github.com/repos/gravitational/teleport/releases/latest \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'].lstrip('v'))")
+  curl https://goteleport.com/static/install-connect.sh | bash -s "$teleport_version"
   ok "Teleport Connect installed"
 }
 
@@ -452,10 +501,15 @@ setup_gnome_extensions() {
   fi
 
   # touchegg — required for x11gestures extension
+  # installed from upstream GitHub releases: the ppa:touchegg/stable PPA has not
+  # published binaries for newer Ubuntu releases yet
   if ! command -v touchegg &>/dev/null; then
-    sudo add-apt-repository -y ppa:touchegg/stable
-    sudo apt update
-    sudo apt install -y touchegg
+    local touchegg_url
+    touchegg_url=$(curl -s https://api.github.com/repos/JoseExposito/touchegg/releases/latest \
+      | python3 -c "import sys,json; d=json.load(sys.stdin); print([a['browser_download_url'] for a in d['assets'] if a['name'].endswith('_amd64.deb')][0])")
+    wget -q -O /tmp/touchegg.deb "$touchegg_url"
+    sudo apt install -y /tmp/touchegg.deb
+    rm -f /tmp/touchegg.deb
     ok "touchegg installed (required for x11gestures)"
   else
     skip "touchegg already installed"
@@ -493,7 +547,7 @@ setup_gnome_extensions() {
 # ─── 18. Android / React Native ────────────────────────────────────────────────
 setup_android() {
   step "Android / React Native"
-  sudo apt install -y watchman qemu-kvm libvirt-daemon-system libvirt-clients bridge-utils
+  sudo apt install -y watchman qemu-system-x86 qemu-utils libvirt-daemon-system libvirt-clients bridge-utils
   sudo usermod -aG kvm "$USER" || true
 
   zshrc_append 'ANDROID_HOME' '
